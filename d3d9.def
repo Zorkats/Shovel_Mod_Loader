@@ -1,0 +1,16 @@
+; d3d9.def
+; Defines the exported functions for our proxy DLL.
+
+LIBRARY   "d3d9"
+EXPORTS
+    Direct3DCreate9                   @1
+    Direct3DCreate9Ex                 @2
+    D3DPERF_BeginEvent                @3
+    D3DPERF_EndEvent                  @4
+    D3DPERF_GetStatus                 @5
+    D3DPERF_QueryRepeatFrame          @6
+    D3DPERF_SetMarker                 @7
+    D3DPERF_SetOptions                @8
+    D3DPERF_SetRegion                 @9
+    Direct3DShaderValidatorCreate9    @10
+    DebugSetMute                      @11
