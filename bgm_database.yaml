@@ -1,0 +1,240 @@
+bgm_tracks:
+  # Title/Menu Music
+  0x34:
+    name: "Title Screen"
+    composer: "Jake Kaufman"
+    track_number: 1
+    is_music: true
+    
+  0x34D:
+    name: "Yacht Club Games Logo"
+    composer: "Jake Kaufman"
+    track_number: -1
+    is_music: true
+
+  # Shovel of Hope - Stage Themes
+  0x100:
+    name: "Strike the Earth! (Plains of Passage)"
+    composer: "Jake Kaufman"
+    track_number: 2
+    is_music: true
+    
+  0x101:
+    name: "The Defender (Pridemoor Keep)"
+    composer: "Jake Kaufman"
+    track_number: 3
+    is_music: true
+    
+  0x102:
+    name: "La Danse Macabre (The Lich Yard)"
+    composer: "Jake Kaufman"
+    track_number: 4
+    is_music: true
+    
+  0x103:
+    name: "Flowers of Antimony (Explodatorium)"
+    composer: "Jake Kaufman"
+    track_number: 5
+    is_music: true
+    
+  0x104:
+    name: "High Above the Land (Flying Machine)"
+    composer: "Jake Kaufman"
+    track_number: 6
+    is_music: true
+    
+  0x105:
+    name: "An Underlying Problem (Lost City)"
+    composer: "Jake Kaufman"
+    track_number: 7
+    is_music: true
+    
+  0x106:
+    name: "Of Devious Machinations (Clockwork Tower)"
+    composer: "Jake Kaufman"
+    track_number: 8
+    is_music: true
+    
+  0x107:
+    name: "A Thousand Leagues Below (Iron Whale)"
+    composer: "Jake Kaufman"
+    track_number: 9
+    is_music: true
+    
+  0x108:
+    name: "The Adventure Awaits (Stranded Ship)"
+    composer: "Jake Kaufman"
+    track_number: 10
+    is_music: true
+
+  # Boss Themes
+  0x200:
+    name: "Duel With a Rival (Black Knight)"
+    composer: "Jake Kaufman"
+    track_number: 11
+    is_music: true
+    
+  0x201:
+    name: "Fighting With All Our Might"
+    composer: "Jake Kaufman"
+    track_number: 12
+    is_music: true
+    
+  0x202:
+    name: "The Vital Vitriol (Plague Knight Boss)"
+    composer: "Jake Kaufman"
+    track_number: 13
+    is_music: true
+    
+  0x203:
+    name: "The Bounty Hunter (Treasure Knight Boss)"
+    composer: "Jake Kaufman"
+    track_number: 14
+    is_music: true
+    
+  0x204:
+    name: "The Spin Ye Bottle (Propeller Knight Boss)"
+    composer: "Jake Kaufman"
+    track_number: 15
+    is_music: true
+    
+  0x205:
+    name: "The Claws of Fate (Mole Knight Boss)"
+    composer: "Jake Kaufman"
+    track_number: 16
+    is_music: true
+    
+  0x206:
+    name: "The Apparition (Specter Knight Boss)"
+    composer: "Jake Kaufman"
+    track_number: 17
+    is_music: true
+    
+  0x207:
+    name: "The Destroyer (Tinker Knight Boss)"
+    composer: "Jake Kaufman"
+    track_number: 18
+    is_music: true
+    
+  0x208:
+    name: "The Decadent Dandy (King Knight Boss)"
+    composer: "Jake Kaufman"
+    track_number: 19
+    is_music: true
+    
+  0x209:
+    name: "The Schemer (Polar Knight Boss)"
+    composer: "Jake Kaufman"
+    track_number: 20
+    is_music: true
+
+  # Special Music
+  0x300:
+    name: "Victory!"
+    composer: "Jake Kaufman"
+    track_number: 21
+    is_music: true
+    
+  0x301:
+    name: "No Escape (Game Over)"
+    composer: "Jake Kaufman"
+    track_number: 22
+    is_music: true
+    
+  0x302:
+    name: "The Requiem of Shield Knight"
+    composer: "Jake Kaufman"
+    track_number: 23
+    is_music: true
+    
+  0x303:
+    name: "A Return to Order (Ending)"
+    composer: "Jake Kaufman"
+    track_number: 24
+    is_music: true
+    
+  0x304:
+    name: "The Starlit Wilds (Campfire)"
+    composer: "Jake Kaufman"
+    track_number: 25
+    is_music: true
+    
+  0x305:
+    name: "Courage Under Fire (Tower Approach)"
+    composer: "Jake Kaufman"
+    track_number: 26
+    is_music: true
+
+  # Village/Shop Themes
+  0x400:
+    name: "Pastorale (Village)"
+    composer: "Jake Kaufman"
+    track_number: 27
+    is_music: true
+    
+  0x401:
+    name: "Watch Me Dance! (Troupple Pond)"
+    composer: "Jake Kaufman"
+    track_number: 28
+    is_music: true
+    
+  0x402:
+    name: "One Fateful Knight (Flashback)"
+    composer: "Jake Kaufman"
+    track_number: 29
+    is_music: true
+
+  # Sound Effects (will not trigger BGM display)
+  0x38:
+    name: "Menu Select"
+    composer: "Jake Kaufman"
+    track_number: -1
+    is_music: false
+    
+  0x39:
+    name: "Menu Back"
+    composer: "Jake Kaufman"
+    track_number: -1
+    is_music: false
+    
+  0x49:
+    name: "Start Game"
+    composer: "Jake Kaufman"
+    track_number: -1
+    is_music: false
+    
+  0x10:
+    name: "Jump"
+    composer: "Jake Kaufman"
+    track_number: -1
+    is_music: false
+    
+  0x11:
+    name: "Shovel Swing"
+    composer: "Jake Kaufman"
+    track_number: -1
+    is_music: false
+    
+  0x12:
+    name: "Hit Enemy"
+    composer: "Jake Kaufman"
+    track_number: -1
+    is_music: false
+    
+  0x13:
+    name: "Take Damage"
+    composer: "Jake Kaufman"
+    track_number: -1
+    is_music: false
+    
+  0x14:
+    name: "Collect Gem"
+    composer: "Jake Kaufman"
+    track_number: -1
+    is_music: false
+    
+  0x15:
+    name: "Collect Food"
+    composer: "Jake Kaufman"
+    track_number: -1
+    is_music: false

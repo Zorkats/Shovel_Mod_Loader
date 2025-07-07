@@ -1,5 +1,3 @@
-// d3d9_proxy.cpp - Complete version with YAML BGM database support
-
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <d3d9.h>
@@ -11,8 +9,9 @@
 #include "MinHook/include/MinHook.h"
 #include "compact_bitmap_font.hpp"
 #include "simple_yaml_parser.hpp"
-#include "game_text_hook.cpp"
-
+#include "enhanced_bgm_system.hpp"
+#include "mod_manager.hpp"
+#include "debug_console.hpp"
 
 #pragma comment(lib, "d3d9.lib")
 
@@ -64,13 +63,12 @@ static int g_totalFrames = 0;
 static bool g_bShowMenu = false;
 static bool g_bShowFPS = false;
 static bool g_bShowBGMInfo = true;
+static bool g_bPermanentBGM = false;
 
-// BGM Information
-static uint32_t g_currentBGM = 0;
-static std::string g_currentBGMName = "None";
-static DWORD g_bgmStartTime = 0;
-static std::map<uint32_t, SimpleYAMLParser::BGMEntry> g_bgmDatabase;
-static std::set<uint32_t> g_shownBGMs;  // Track shown BGMs per session
+// Enhanced systems
+static BGMSystem* g_pBGMSystem = nullptr;
+static ModManager* g_pModManager = nullptr;
+
 
 // BGM display state
 static float g_bgmAlpha = 0.0f;
@@ -92,27 +90,33 @@ struct MenuItem {
     const char* name;
     bool* pValue;
     bool isToggle;
+    std::function<void()> action;
 };
 
-static bool g_bGodMode = false;
-static bool g_bSpeedHack = false;
-static bool g_bInfiniteGems = false;
 static int g_nSelectedItem = 0;
 
-MenuItem g_menuItems[] = {
-    {"God Mode", &g_bGodMode, true},
-    {"Speed Hack (2x)", &g_bSpeedHack, true},
-    {"Infinite Gems", &g_bInfiniteGems, true},
-    {"Show FPS", &g_bShowFPS, true},
-    {"Show BGM Info", &g_bShowBGMInfo, true},
-};
+// Menu items (initialized after ModManager is created)
+static std::vector<MenuItem> g_menuItems;
+
+// Initialize menu items
+void InitializeMenuItems() {
+    g_menuItems.clear();
+    g_menuItems.push_back({"God Mode", g_pModManager->GetCheatEnabled("God Mode"), true, nullptr});
+    g_menuItems.push_back({"Speed Hack (2x)", g_pModManager->GetCheatEnabled("Speed Hack"), true, nullptr});
+    g_menuItems.push_back({"Infinite Gems", g_pModManager->GetCheatEnabled("Infinite Gems"), true, nullptr});
+    g_menuItems.push_back({"Show FPS", &g_bShowFPS, true, nullptr});
+    g_menuItems.push_back({"Show BGM Info", &g_bShowBGMInfo, true, nullptr});
+    g_menuItems.push_back({"Permanent BGM Display", &g_bPermanentBGM, true, nullptr});
+    g_menuItems.push_back({"Open Mod Manager", nullptr, false, []() { g_pModManager->ShowUI(); }});
+    g_menuItems.push_back({"Show Debug Console", nullptr, false, []() { g_pDebugConsole->Show(); }});
+}
 
 // Initialize fonts
 void InitializeFonts() {
     if (!g_pFont) {
         g_pFont = new CompactBitmapFont(2.0f);
         g_pFontSmall = new CompactBitmapFont(1.5f);
-        std::cout << "[D3D9 Proxy] Bitmap fonts initialized!" << std::endl;
+        LOG_INFO("D3D9", "Bitmap fonts initialized!");
     }
 }
 
@@ -149,35 +153,43 @@ void DrawBorder(IDirect3DDevice9* pDevice, float x, float y, float width, float 
     DrawSimpleRect(pDevice, x + width - thickness, y, thickness, height, color);
 }
 
-// Draw BGM Info overlay
+// Enhanced BGM Info overlay
 void DrawBGMInfo(IDirect3DDevice9* pDevice) {
-    if (!g_bShowBGMInfo || !pDevice) return;
+    if (!g_bShowBGMInfo || !pDevice || !g_pBGMSystem) return;
 
-    // Update fade effect
-    DWORD currentTime = GetTickCount();
-    if (g_currentBGM != 0) {
-        auto bgmIt = g_bgmDatabase.find(g_currentBGM);
-        bool shouldShow = false;
+    // Ensure fonts are initialized before drawing
+    if (!g_pFont || !g_pFontSmall) {
+        InitializeFonts();
+        if (!g_pFont || !g_pFontSmall) return; // Still not initialized, skip drawing
+    }
 
-        if (bgmIt != g_bgmDatabase.end() && bgmIt->second.isMusic) {
-            if (g_shownBGMs.find(g_currentBGM) == g_shownBGMs.end()) {
-                shouldShow = true;
-            }
-        }
+    // Get current track info
+    const BGMSystem::TrackInfo* currentTrack = g_pBGMSystem->GetCurrentTrack();
 
-        if (shouldShow) {
-            if (currentTime - g_bgmStartTime < 1000) {
-                g_bgmAlpha = min(g_bgmAlpha + BGM_FADE_SPEED, 1.0f);
-            } else if (currentTime - g_bgmStartTime < BGM_DISPLAY_TIME) {
-                g_bgmAlpha = 1.0f;
-            } else {
-                g_bgmAlpha = max(g_bgmAlpha - BGM_FADE_SPEED, 0.0f);
-            }
+    if (currentTrack) {
+        DWORD currentTime = GetTickCount();
+        auto playTime = g_pBGMSystem->GetCurrentTrackTime();
+
+        // Fade logic
+        if (g_bPermanentBGM) {
+            g_bgmAlpha = 1.0f;
         } else {
-            g_bgmAlpha = max(g_bgmAlpha - BGM_FADE_SPEED * 2, 0.0f);
+            if (playTime.count() < 1000) {
+                // Fade in for 1 second
+                g_bgmAlpha = min(g_bgmAlpha + BGM_FADE_SPEED * 2, 1.0f);
+            } else if (playTime.count() < BGM_DISPLAY_TIME) {
+                // Stay fully visible
+                g_bgmAlpha = 1.0f;
+            } else if (playTime.count() < BGM_DISPLAY_TIME + 1000) {
+                // Fade out for 1 second
+                g_bgmAlpha = max(g_bgmAlpha - BGM_FADE_SPEED, 0.0f);
+            } else {
+                // Hidden
+                g_bgmAlpha = 0.0f;
+            }
         }
     } else {
-        g_bgmAlpha = max(g_bgmAlpha - BGM_FADE_SPEED, 0.0f);
+        g_bgmAlpha = max(g_bgmAlpha - BGM_FADE_SPEED * 2, 0.0f);
     }
 
     if (g_bgmAlpha <= 0.0f) return;
@@ -191,30 +203,51 @@ void DrawBGMInfo(IDirect3DDevice9* pDevice) {
     BYTE alpha = (BYTE)(200 * g_bgmAlpha);
     BYTE textAlpha = (BYTE)(255 * g_bgmAlpha);
 
+    // Background
     DrawSimpleRect(pDevice, bgmX, bgmY, 300.0f, 80.0f, D3DCOLOR_ARGB(alpha, 0, 0, 0));
-    DrawBorder(pDevice, bgmX, bgmY, 300.0f, 80.0f, 2.0f, D3DCOLOR_ARGB(textAlpha, 100, 100, 255));
 
-    if (g_pFontSmall && g_currentBGM != 0) {
-        g_pFontSmall->DrawString(pDevice, bgmX + 10, bgmY + 5, "NOW PLAYING",
-                                D3DCOLOR_ARGB(textAlpha * 150 / 255, 150, 150, 255));
+    // Border color based on track type
+    DWORD borderColor = D3DCOLOR_ARGB(textAlpha, 100, 100, 255);
+    if (currentTrack) {
+        if (currentTrack->isBoss) {
+            borderColor = D3DCOLOR_ARGB(textAlpha, 255, 100, 100);
+        } else if (currentTrack->isSpecial) {
+            borderColor = D3DCOLOR_ARGB(textAlpha, 255, 200, 100);
+        }
+    }
 
-        auto it = g_bgmDatabase.find(g_currentBGM);
-        if (it != g_bgmDatabase.end()) {
-            const auto& info = it->second;
+    DrawBorder(pDevice, bgmX, bgmY, 300.0f, 80.0f, 2.0f, borderColor);
 
-            g_pFont->DrawString(pDevice, bgmX + 10, bgmY + 25, info.name,
+    if (g_pFontSmall && g_pFont && currentTrack) {
+        try {
+            g_pFontSmall->DrawString(pDevice, bgmX + 10, bgmY + 5, "NOW PLAYING",
+                                    D3DCOLOR_ARGB(textAlpha * 150 / 255, 150, 150, 255));
+
+            // Track name
+            std::string displayName = currentTrack->name;
+            if (displayName.length() > 25) {
+                displayName = displayName.substr(0, 22) + "...";
+            }
+
+            g_pFont->DrawString(pDevice, bgmX + 10, bgmY + 25, displayName,
                                D3DCOLOR_ARGB(textAlpha, 255, 255, 255));
 
-            std::string composerText = "By: " + info.composer;
+            // Composer
+            std::string composerText = "By: " + currentTrack->composer;
             g_pFontSmall->DrawString(pDevice, bgmX + 10, bgmY + 50, composerText,
                                     D3DCOLOR_ARGB(textAlpha * 200 / 255, 200, 200, 200));
 
-            if (info.trackNumber > 0) {
-                char trackText[32];
-                sprintf_s(trackText, "OST Track #%d", info.trackNumber);
-                g_pFontSmall->DrawString(pDevice, bgmX + 200, bgmY + 50, trackText,
-                                        D3DCOLOR_ARGB(textAlpha * 200 / 255, 200, 200, 200));
+            // Track number and stage
+            if (currentTrack->trackNumber > 0) {
+                char trackText[64];
+                sprintf_s(trackText, "#%d - %s", currentTrack->trackNumber, currentTrack->stage.c_str());
+                g_pFontSmall->DrawString(pDevice, bgmX + 10, bgmY + 65, trackText,
+                                        D3DCOLOR_ARGB(textAlpha * 180 / 255, 180, 180, 180));
             }
+
+            
+        } catch (...) {
+            LOG_ERROR("D3D9", "Exception in DrawBGMInfo text rendering");
         }
     }
 }
@@ -223,21 +256,27 @@ void DrawBGMInfo(IDirect3DDevice9* pDevice) {
 void DrawModMenu(IDirect3DDevice9* pDevice) {
     if (!pDevice || !g_bShowMenu) return;
 
+    // Ensure fonts are initialized
+    if (!g_pFont || !g_pFontSmall) {
+        InitializeFonts();
+        if (!g_pFont || !g_pFontSmall) return;
+    }
+
     float menuX = 50.0f;
     float menuY = 100.0f;
-    float menuWidth = 300.0f;
-    float menuHeight = 250.0f;
+    float menuWidth = 350.0f;
+    float menuHeight = 300.0f;
 
     DrawSimpleRect(pDevice, menuX, menuY, menuWidth, menuHeight, D3DCOLOR_ARGB(220, 20, 20, 20));
     DrawBorder(pDevice, menuX, menuY, menuWidth, menuHeight, 2.0f, D3DCOLOR_ARGB(255, 255, 200, 0));
     DrawSimpleRect(pDevice, menuX, menuY, menuWidth, 30.0f, D3DCOLOR_ARGB(255, 255, 200, 0));
 
     if (g_pFont) {
-        g_pFont->DrawString(pDevice, menuX + 10, menuY + 5, "SHOVEL KNIGHT MOD MENU", D3DCOLOR_ARGB(255, 0, 0, 0));
+        g_pFont->DrawString(pDevice, menuX + 10, menuY + 5, "SHOVEL KNIGHT MOD MENU V2", D3DCOLOR_ARGB(255, 0, 0, 0));
     }
 
     float itemY = menuY + 40.0f;
-    int numItems = sizeof(g_menuItems) / sizeof(g_menuItems[0]);
+    int numItems = g_menuItems.size();
 
     for (int i = 0; i < numItems; i++) {
         if (i == g_nSelectedItem) {
@@ -246,7 +285,7 @@ void DrawModMenu(IDirect3DDevice9* pDevice) {
 
         if (g_pFont) {
             char itemText[256];
-            if (g_menuItems[i].isToggle) {
+            if (g_menuItems[i].isToggle && g_menuItems[i].pValue) {
                 sprintf_s(itemText, "%s: %s", g_menuItems[i].name,
                          *g_menuItems[i].pValue ? "ON" : "OFF");
             } else {
@@ -280,18 +319,38 @@ void HandleInput() {
     if (GetAsyncKeyState(VK_INSERT) & 0x8000) {
         if (!insertPressed) {
             g_bShowMenu = !g_bShowMenu;
-            std::cout << "[D3D9 Proxy] Menu toggled: " << (g_bShowMenu ? "ON" : "OFF") << std::endl;
+            LOG_INFO("D3D9", "Menu toggled: " + std::string(g_bShowMenu ? "ON" : "OFF"));
         }
         insertPressed = true;
     } else {
         insertPressed = false;
     }
 
+    // F6 - Toggle permanent BGM display
+    if (GetAsyncKeyState(VK_F6) & 1) {
+        g_bPermanentBGM = !g_bPermanentBGM;
+        LOG_INFO("D3D9", "Permanent BGM display: " + std::string(g_bPermanentBGM ? "ON" : "OFF"));
+    }
+
+    // F7 - Toggle BGM discovery mode
+    if (GetAsyncKeyState(VK_F7) & 1) {
+        g_pBGMSystem->SetDiscoveryMode(!g_pBGMSystem->IsDiscoveryMode());
+        LOG_INFO("D3D9", "BGM discovery mode: " + std::string(g_pBGMSystem->IsDiscoveryMode() ? "ON" : "OFF"));
+    }
+
+    // F8 - Show BGM statistics
+    if (GetAsyncKeyState(VK_F8) & 1) {
+        g_pBGMSystem->PrintStatistics();
+    }
+
+    // Process mod manager hotkeys
+    g_pModManager->ProcessHotkeys();
+
     if (g_bShowMenu) {
         if (GetAsyncKeyState(VK_UP) & 0x8000) {
             if (!upPressed) {
                 g_nSelectedItem--;
-                int numItems = sizeof(g_menuItems) / sizeof(g_menuItems[0]);
+                int numItems = g_menuItems.size();
                 if (g_nSelectedItem < 0) g_nSelectedItem = numItems - 1;
             }
             upPressed = true;
@@ -302,7 +361,7 @@ void HandleInput() {
         if (GetAsyncKeyState(VK_DOWN) & 0x8000) {
             if (!downPressed) {
                 g_nSelectedItem++;
-                int numItems = sizeof(g_menuItems) / sizeof(g_menuItems[0]);
+                int numItems = g_menuItems.size();
                 if (g_nSelectedItem >= numItems) g_nSelectedItem = 0;
             }
             downPressed = true;
@@ -312,10 +371,12 @@ void HandleInput() {
 
         if (GetAsyncKeyState(VK_RETURN) & 0x8000) {
             if (!enterPressed) {
-                if (g_menuItems[g_nSelectedItem].pValue) {
+                if (g_menuItems[g_nSelectedItem].action) {
+                    g_menuItems[g_nSelectedItem].action();
+                } else if (g_menuItems[g_nSelectedItem].pValue) {
                     *g_menuItems[g_nSelectedItem].pValue = !*g_menuItems[g_nSelectedItem].pValue;
-                    std::cout << "[D3D9 Proxy] " << g_menuItems[g_nSelectedItem].name
-                             << ": " << (*g_menuItems[g_nSelectedItem].pValue ? "ON" : "OFF") << std::endl;
+                    LOG_INFO("D3D9", std::string(g_menuItems[g_nSelectedItem].name) + ": " +
+                            (*g_menuItems[g_nSelectedItem].pValue ? "ON" : "OFF"));
                 }
             }
             enterPressed = true;
@@ -327,8 +388,18 @@ void HandleInput() {
 
 // Hooked EndScene function
 HRESULT APIENTRY hkEndScene(IDirect3DDevice9* pDevice) {
+    // Prevent crashes during early frames
+    if (!pDevice) return o_EndScene ? o_EndScene(pDevice) : D3D_OK;
+
     g_frameCount++;
     g_totalFrames++;
+
+    // Initialize fonts early to prevent crashes
+    static bool fontsInitAttempted = false;
+    if (!fontsInitAttempted && g_totalFrames > 60) {
+        InitializeFonts();
+        fontsInitAttempted = true;
+    }
 
     if (g_totalFrames > 480) {
         g_bSafeToRender = true;
@@ -337,7 +408,7 @@ HRESULT APIENTRY hkEndScene(IDirect3DDevice9* pDevice) {
     DWORD currentTime = GetTickCount();
     if (currentTime - g_lastLogTime > 1000) {
         if (g_bShowFPS) {
-            std::cout << "[D3D9 Proxy] FPS: " << g_frameCount << std::endl;
+            LOG_DEBUG("FPS", "FPS: " + std::to_string(g_frameCount));
         }
         g_frameCount = 0;
         g_lastLogTime = currentTime;
@@ -357,7 +428,7 @@ HRESULT APIENTRY hkEndScene(IDirect3DDevice9* pDevice) {
                 HookTextRendering_t HookTextRendering = (HookTextRendering_t)GetProcAddress(hTextInterceptor, "HookTextRendering");
                 if (HookTextRendering) {
                     HookTextRendering(pDevice);
-                    std::cout << "[D3D9 Proxy] Text interceptor hooked!" << std::endl;
+                    LOG_INFO("D3D9", "Text interceptor hooked!");
                 }
             }
             textInterceptorInitialized = true;
@@ -365,39 +436,60 @@ HRESULT APIENTRY hkEndScene(IDirect3DDevice9* pDevice) {
 
         HandleInput();
 
+        // Save ALL render states before drawing
         DWORD oldColorWriteEnable, oldSrcBlend, oldDestBlend, oldAlphaBlendEnable;
+        DWORD oldLighting, oldZEnable, oldCullMode, oldFillMode;
+        DWORD oldVertexProcessing, oldFVF;
+        IDirect3DVertexBuffer9* oldStreamData = nullptr;
+        UINT oldStreamOffset, oldStreamStride;
+        IDirect3DBaseTexture9* oldTexture = nullptr;
+
         pDevice->GetRenderState(D3DRS_COLORWRITEENABLE, &oldColorWriteEnable);
         pDevice->GetRenderState(D3DRS_SRCBLEND, &oldSrcBlend);
         pDevice->GetRenderState(D3DRS_DESTBLEND, &oldDestBlend);
         pDevice->GetRenderState(D3DRS_ALPHABLENDENABLE, &oldAlphaBlendEnable);
+        pDevice->GetRenderState(D3DRS_LIGHTING, &oldLighting);
+        pDevice->GetRenderState(D3DRS_ZENABLE, &oldZEnable);
+        pDevice->GetRenderState(D3DRS_CULLMODE, &oldCullMode);
+        pDevice->GetRenderState(D3DRS_FILLMODE, &oldFillMode);
+        pDevice->GetFVF(&oldFVF);
+        pDevice->GetStreamSource(0, &oldStreamData, &oldStreamOffset, &oldStreamStride);
+        pDevice->GetTexture(0, &oldTexture);
 
+        // Set render states for our UI
         pDevice->SetRenderState(D3DRS_COLORWRITEENABLE, 0xFFFFFFFF);
         pDevice->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
         pDevice->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
         pDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+        pDevice->SetRenderState(D3DRS_LIGHTING, FALSE);
+        pDevice->SetRenderState(D3DRS_ZENABLE, FALSE);
+        pDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+        pDevice->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+        pDevice->SetTexture(0, NULL);
+        pDevice->SetStreamSource(0, NULL, 0, 0);
+        pDevice->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
 
+        // Status bar
         DrawSimpleRect(pDevice, 10.0f, 10.0f, 200.0f, 25.0f, D3DCOLOR_ARGB(200, 0, 0, 0));
         DrawBorder(pDevice, 10.0f, 10.0f, 200.0f, 25.0f, 2.0f, D3DCOLOR_ARGB(255, 255, 255, 0));
 
         if (g_pFont) {
-            g_pFont->DrawString(pDevice, 15, 12, "SK MOD - INSERT = MENU", D3DCOLOR_ARGB(255, 255, 255, 0));
+            g_pFont->DrawString(pDevice, 15, 12, "SK MOD V2 - INSERT = MENU", D3DCOLOR_ARGB(255, 255, 255, 0));
         }
 
+        // Active cheats display
         if (!g_bShowMenu && g_pFont) {
             int yOffset = 40;
-            if (g_bGodMode) {
-                g_pFont->DrawString(pDevice, 15, yOffset, "[GOD MODE ON]", D3DCOLOR_ARGB(255, 0, 255, 0));
-                yOffset += 20;
-            }
-            if (g_bSpeedHack) {
-                g_pFont->DrawString(pDevice, 15, yOffset, "[SPEED HACK ON]", D3DCOLOR_ARGB(255, 0, 255, 0));
-                yOffset += 20;
-            }
-            if (g_bInfiniteGems) {
-                g_pFont->DrawString(pDevice, 15, yOffset, "[INFINITE GEMS ON]", D3DCOLOR_ARGB(255, 0, 255, 0));
+            for (const auto& cheat : g_pModManager->GetCheats()) {
+                if (cheat.enabled) {
+                    std::string display = "[" + cheat.name + " ON]";
+                    g_pFont->DrawString(pDevice, 15, yOffset, display, D3DCOLOR_ARGB(255, 0, 255, 0));
+                    yOffset += 20;
+                }
             }
         }
 
+        // FPS display
         if (g_bShowFPS && g_pFontSmall) {
             char fpsText[32];
             sprintf_s(fpsText, "FPS: %d", g_frameCount);
@@ -407,23 +499,37 @@ HRESULT APIENTRY hkEndScene(IDirect3DDevice9* pDevice) {
         DrawBGMInfo(pDevice);
         DrawModMenu(pDevice);
 
+        // Restore ALL render states
         pDevice->SetRenderState(D3DRS_COLORWRITEENABLE, oldColorWriteEnable);
         pDevice->SetRenderState(D3DRS_SRCBLEND, oldSrcBlend);
         pDevice->SetRenderState(D3DRS_DESTBLEND, oldDestBlend);
         pDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, oldAlphaBlendEnable);
+        pDevice->SetRenderState(D3DRS_LIGHTING, oldLighting);
+        pDevice->SetRenderState(D3DRS_ZENABLE, oldZEnable);
+        pDevice->SetRenderState(D3DRS_CULLMODE, oldCullMode);
+        pDevice->SetRenderState(D3DRS_FILLMODE, oldFillMode);
+        pDevice->SetFVF(oldFVF);
+        if (oldStreamData) {
+            pDevice->SetStreamSource(0, oldStreamData, oldStreamOffset, oldStreamStride);
+            oldStreamData->Release();
+        }
+        if (oldTexture) {
+            pDevice->SetTexture(0, oldTexture);
+            oldTexture->Release();
+        }
     }
 
     return o_EndScene(pDevice);
 }
 
-// Other hook functions remain the same...
+// Other hook functions
 HRESULT APIENTRY hkPresent(IDirect3DDevice9* pDevice, const RECT* pSourceRect, const RECT* pDestRect,
                            HWND hDestWindowOverride, const RGNDATA* pDirtyRegion) {
     return o_Present(pDevice, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
 }
 
 HRESULT APIENTRY hkReset(IDirect3DDevice9* pDevice, D3DPRESENT_PARAMETERS* pPresentationParameters) {
-    std::cout << "[D3D9 Proxy] Device reset called" << std::endl;
+    LOG_INFO("D3D9", "Device reset called");
     HRESULT hr = o_Reset(pDevice, pPresentationParameters);
     return hr;
 }
@@ -431,13 +537,13 @@ HRESULT APIENTRY hkReset(IDirect3DDevice9* pDevice, D3DPRESENT_PARAMETERS* pPres
 HRESULT WINAPI hkCreateDeviceEx(IDirect3D9Ex* pD3D, UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow,
                                 DWORD BehaviorFlags, D3DPRESENT_PARAMETERS* pPresentationParameters,
                                 D3DDISPLAYMODEEX* pFullscreenDisplayMode, IDirect3DDevice9Ex** ppReturnedDeviceInterface) {
-    std::cout << "[D3D9 Proxy] CreateDeviceEx called" << std::endl;
+    LOG_INFO("D3D9", "CreateDeviceEx called");
 
     HRESULT hr = o_CreateDeviceEx(pD3D, Adapter, DeviceType, hFocusWindow, BehaviorFlags,
                                   pPresentationParameters, pFullscreenDisplayMode, ppReturnedDeviceInterface);
 
     if (SUCCEEDED(hr) && ppReturnedDeviceInterface && *ppReturnedDeviceInterface) {
-        std::cout << "[D3D9 Proxy] Device created, hooking EndScene, Present and Reset" << std::endl;
+        LOG_INFO("D3D9", "Device created, hooking EndScene, Present and Reset");
 
         void** vtable = *(void***)(*ppReturnedDeviceInterface);
 
@@ -473,58 +579,15 @@ void LoadRealD3D9Functions() {
     }
 }
 
-// Initialize mods
-void InitializeMods() {
-    auto modsDir = std::filesystem::current_path() / "mods";
-    std::cout << "[D3D9 Proxy] Scanning mods in: " << modsDir.string() << std::endl;
-
-    std::error_code ec;
-    if (!std::filesystem::exists(modsDir, ec)) {
-        std::cout << "[D3D9 Proxy] Mods directory doesn't exist, creating it" << std::endl;
-        std::filesystem::create_directory(modsDir, ec);
-        return;
-    }
-
-    for (auto& f : std::filesystem::directory_iterator(modsDir, ec)) {
-        if (f.path().extension() == L".dll") {
-            auto wpath = f.path().wstring();
-            HMODULE h = LoadLibraryW(wpath.c_str());
-            if (h) {
-                std::wcout << L"[D3D9 Proxy] Loaded mod: " << wpath << L"\n";
-            } else {
-                std::wcout << L"[D3D9 Proxy] Failed to load mod: " << wpath << L"\n";
-            }
-        }
-    }
-}
-
-// Load BGM database
-void LoadBGMDatabase() {
-    // Try to load from game directory first
-    std::string yamlPath = "bgm_database.yaml";
-
-    if (!std::filesystem::exists(yamlPath)) {
-        // Try mods directory
-        yamlPath = "mods/bgm_database.yaml";
-    }
-
-    if (std::filesystem::exists(yamlPath)) {
-        g_bgmDatabase = SimpleYAMLParser::LoadBGMDatabase(yamlPath);
-        std::cout << "[D3D9 Proxy] Loaded BGM database from " << yamlPath << std::endl;
-    } else {
-        std::cout << "[D3D9 Proxy] BGM database not found! Please create bgm_database.yaml" << std::endl;
-    }
-}
-
 // Try to hook via dummy device
 void TryHookViaDevice() {
-    std::cout << "[D3D9 Proxy] Attempting to hook via dummy device..." << std::endl;
+    LOG_INFO("D3D9", "Attempting to hook via dummy device...");
 
     HWND hWnd = GetDesktopWindow();
 
     IDirect3D9Ex* pD3DEx = nullptr;
     if (FAILED(real_Direct3DCreate9Ex(D3D_SDK_VERSION, &pD3DEx))) {
-        std::cout << "[D3D9 Proxy] Failed to create D3D9Ex" << std::endl;
+        LOG_ERROR("D3D9", "Failed to create D3D9Ex");
         return;
     }
 
@@ -540,7 +603,7 @@ void TryHookViaDevice() {
                                         &d3dpp, NULL, &pDevice);
 
     if (SUCCEEDED(hr) && pDevice) {
-        std::cout << "[D3D9 Proxy] Dummy device created" << std::endl;
+        LOG_INFO("D3D9", "Dummy device created");
 
         void** vtable = *(void***)pDevice;
 
@@ -567,44 +630,17 @@ extern "C" {
 
 // BGM notification
 __declspec(dllexport) void NotifyBGMPlay(uint32_t soundId) {
-    auto it = g_bgmDatabase.find(soundId);
-
-    if (it != g_bgmDatabase.end() && it->second.isMusic) {
-        g_currentBGM = soundId;
-        g_bgmStartTime = GetTickCount();
-        g_currentBGMName = it->second.name;
-
-        if (g_shownBGMs.find(soundId) == g_shownBGMs.end()) {
-            g_shownBGMs.insert(soundId);
-            g_bgmAlpha = 0.0f;
-
-            std::cout << "[D3D9 Proxy] NEW BGM: " << g_currentBGMName
-                      << " (ID: 0x" << std::hex << soundId << std::dec << ")"
-                      << " [First time this session]" << std::endl;
-        } else {
-            std::cout << "[D3D9 Proxy] BGM: " << g_currentBGMName
-                      << " (ID: 0x" << std::hex << soundId << std::dec << ")"
-                      << " [Already shown]" << std::endl;
-        }
-    } else if (it != g_bgmDatabase.end() && !it->second.isMusic) {
-        std::cout << "[D3D9 Proxy] SFX: " << it->second.name
-                  << " (ID: 0x" << std::hex << soundId << std::dec << ")" << std::endl;
-    } else {
-        std::cout << "[D3D9 Proxy] Unknown sound ID: 0x" << std::hex << soundId << std::dec << std::endl;
+    if (g_pBGMSystem) {
+        g_pBGMSystem->OnSoundPlay(soundId);
     }
 }
 
 __declspec(dllexport) void NotifyBGMStop(uint32_t soundId) {
-    if (g_currentBGM == soundId) {
-        std::cout << "[D3D9 Proxy] BGM Stopped: " << g_currentBGMName << std::endl;
-        g_currentBGM = 0;
-        g_currentBGMName = "None";
-    }
+    // BGM system handles this internally now
 }
 
 __declspec(dllexport) void ResetBGMSession() {
-    g_shownBGMs.clear();
-    std::cout << "[D3D9 Proxy] BGM session reset - all tracks can be shown again" << std::endl;
+    LOG_INFO("BGM", "BGM session reset");
 }
 
 // D3D9 exports
@@ -614,7 +650,7 @@ IDirect3D9* WINAPI Direct3DCreate9(UINT sdkVer) {
 }
 
 HRESULT WINAPI Direct3DCreate9Ex(UINT sdkVer, IDirect3D9Ex** ppD3D) {
-    std::cout << "[D3D9 Proxy] Direct3DCreate9Ex called" << std::endl;
+    LOG_INFO("D3D9", "Direct3DCreate9Ex called");
 
     LoadRealD3D9Functions();
 
@@ -683,30 +719,42 @@ void WINAPI PSGPSampleTexture() {}
 // DLL entry point
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
     if (reason == DLL_PROCESS_ATTACH) {
-        AllocConsole();
-        freopen_s((FILE**)stdout, "CONOUT$", "w", stdout);
-        SetConsoleTitleA("Shovel Knight D3D9 Proxy");
+        // Initialize debug console
+        g_pDebugConsole = new DebugConsole();
 
-        std::cout << "============================================" << std::endl;
-        std::cout << "[D3D9 Proxy] WITH BITMAP FONT TEXT" << std::endl;
-        std::cout << "[D3D9 Proxy] Using custom bitmap font renderer" << std::endl;
-        std::cout << "[D3D9 Proxy] Process ID: " << GetCurrentProcessId() << std::endl;
-        std::cout << "============================================" << std::endl;
+        LOG_INFO("D3D9", "============================================");
+        LOG_INFO("D3D9", "SHOVEL KNIGHT MOD LOADER V2.0");
+        LOG_INFO("D3D9", "Enhanced with BGM System, Mod Manager, and Debug Console");
+        LOG_INFO("D3D9", "Process ID: " + std::to_string(GetCurrentProcessId()));
+        LOG_INFO("D3D9", "============================================");
 
         if (MH_Initialize() != MH_OK) {
-            std::cout << "[D3D9 Proxy] Failed to initialize MinHook!" << std::endl;
+            LOG_ERROR("D3D9", "Failed to initialize MinHook!");
             return FALSE;
         }
 
-        std::cout << "[D3D9 Proxy] MinHook initialized" << std::endl;
+        LOG_INFO("D3D9", "MinHook initialized");
 
-        // Load BGM database
-        LoadBGMDatabase();
+        // Initialize systems
+        g_pBGMSystem = new BGMSystem("bgm_database.yaml");
+        g_pBGMSystem->SetOnTrackStart([](const BGMSystem::TrackInfo& track) {
+            LOG_INFO("BGM", "Started: " + track.name + " (Stage: " + track.stage + ")");
+        });
 
-        InitializeMods();
+        g_pModManager = new ModManager();
+        g_pModManager->LoadMods();
 
-        std::cout << "[D3D9 Proxy] Ready!" << std::endl;
-        std::cout << "============================================" << std::endl;
+        // Initialize menu items after ModManager is created
+        InitializeMenuItems();
+
+        // Initialize fonts early
+        InitializeFonts();
+
+        LOG_INFO("D3D9", "Ready!");
+        LOG_INFO("D3D9", "Press F6 for permanent BGM display");
+        LOG_INFO("D3D9", "Press F7 for BGM discovery mode");
+        LOG_INFO("D3D9", "Press F8 for BGM statistics");
+        LOG_INFO("D3D9", "============================================");
     } else if (reason == DLL_PROCESS_DETACH) {
         if (g_pFont) {
             delete g_pFont;
@@ -715,6 +763,20 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
         if (g_pFontSmall) {
             delete g_pFontSmall;
             g_pFontSmall = nullptr;
+        }
+        if (g_pBGMSystem) {
+            g_pBGMSystem->SaveDatabase();
+            delete g_pBGMSystem;
+            g_pBGMSystem = nullptr;
+        }
+        if (g_pModManager) {
+            g_pModManager->SaveConfig();
+            delete g_pModManager;
+            g_pModManager = nullptr;
+        }
+        if (g_pDebugConsole) {
+            delete g_pDebugConsole;
+            g_pDebugConsole = nullptr;
         }
 
         MH_DisableHook(MH_ALL_HOOKS);
